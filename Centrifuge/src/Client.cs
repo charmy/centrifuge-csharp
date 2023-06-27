@@ -7,12 +7,13 @@ using System.Net.WebSockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Google.Protobuf;
+using Websocket.Client;
 
 namespace Centrifuge
 {
     public class Client
     {
-        private ClientWebSocket _ws;
+        private WebsocketClient _ws;
         private readonly string _endpoint;
         private readonly Options _opts;
         private string _token;
@@ -78,12 +79,12 @@ namespace Centrifuge
                 _data = ByteString.CopyFrom(opts.Data);
             }
         }
-        
+
         public Options GetOpts()
         {
             return _opts;
         }
-        
+
         public TaskFactory GetExecutor()
         {
             return _executor;
@@ -205,113 +206,39 @@ namespace Centrifuge
                 }
             }
 
-            _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", new CancellationToken());
+            _ws.Stop(WebSocketCloseStatus.NormalClosure, "");
         }
 
         private async void _connect()
         {
-            ClientWebSocket webSocket = new ClientWebSocket();
-
-            if (_opts.Headers != null)
-            {
-                foreach (var pair in _opts.Headers)
-                {
-                    webSocket.Options.SetRequestHeader(pair.Key, pair.Value);
-                }
-            }
-
-            webSocket.Options.AddSubProtocol("centrifuge-protobuf");
-
             if (_ws != null)
             {
-                _ws.Abort();
+                Task t = _ws.Stop(WebSocketCloseStatus.NormalClosure, "");
+                t.Wait();
             }
 
-            try
+            var factory = new Func<ClientWebSocket>(() =>
             {
-                await webSocket.ConnectAsync(new Uri(_endpoint), CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                _executor.StartNew(() =>
+                var c = new ClientWebSocket();
+
+                if (_opts.Headers != null)
                 {
-                    HandleConnectionError(ex);
-                    ProcessDisconnect(CONNECTING_TRANSPORT_CLOSED, "transport closed", true);
-                    if (_state == ClientState.CONNECTING)
+                    foreach (var pair in _opts.Headers)
                     {
-                        // We need to schedule reconnect from here, since onClosed won't be called
-                        // after onFailure.
-                        ScheduleReconnect();
+                        c.Options.SetRequestHeader(pair.Key, pair.Value);
                     }
-                });
-                return;
-            }
-
-            _ws = webSocket;
-
-            //todo
-            _executor.StartNew(async () =>
-            {
-                try
-                {
-                    await HandleConnectionOpen();
                 }
-                catch (Exception ex)
-                {
-                    // Should never happen.
-                    Console.WriteLine(ex.StackTrace);
-                    _listener.OnError(this, new ErrorEvent(new UnclassifiedError(ex)));
-                    ProcessDisconnect(DISCONNECTED_BAD_PROTOCOL, "bad protocol (open)", false);
-                }
+
+                c.Options.AddSubProtocol("centrifuge-protobuf");
+
+                return c;
             });
 
-            var buffer = new byte[4096];
-            var receiveBuffer = new List<byte>();
+            var client = new WebsocketClient(new Uri(_endpoint), factory);
+            client.IsReconnectionEnabled = false;
 
-            while (webSocket.State == WebSocketState.Open)
+            client.MessageReceived.Subscribe(result =>
             {
-                WebSocketReceiveResult result = null;
-                try
-                {
-                    result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    _executor.StartNew(() =>
-                    {
-                        HandleConnectionError(ex);
-                        ProcessDisconnect(DISCONNECTED_BAD_PROTOCOL, "bad protocol (proto)", false);
-                    });
-                    break;
-                }
-
-                if (result.MessageType == WebSocketMessageType.Close)
-                {
-                    _executor.StartNew(() =>
-                    {
-                        if (_state != ClientState.DISCONNECTED)
-                        {
-                            ProcessDisconnect(CONNECTING_TRANSPORT_CLOSED, "transport closed", false);
-                        }
-
-                        if (_state == ClientState.CONNECTING)
-                        {
-                            ScheduleReconnect();
-                        }
-                    });
-                    break;
-                }
-
-                if (result.MessageType == WebSocketMessageType.Binary)
-                {
-                    receiveBuffer.AddRange(buffer.Take(result.Count));
-                }
-
-                if (!result.EndOfMessage)
-                {
-                    continue;
-                }
-
                 _executor.StartNew(() =>
                 {
                     if (_state != ClientState.CONNECTING && _state != ClientState.CONNECTED)
@@ -319,11 +246,11 @@ namespace Centrifuge
                         return;
                     }
 
-                    using (MemoryStream stream = new MemoryStream(receiveBuffer.ToArray()))
+                    using (var stream = new MemoryStream(result.Binary))
                     {
                         while (stream.Position < stream.Length)
                         {
-                            Protocol.Reply reply = null;
+                            Protocol.Reply reply;
                             try
                             {
                                 reply = Protocol.Reply.Parser.ParseDelimitedFrom(stream);
@@ -352,12 +279,70 @@ namespace Centrifuge
                             }
                         }
                     }
-
-                    receiveBuffer.Clear();
                 });
+            });
+
+            client.DisconnectionHappened.Subscribe(info =>
+            {
+                _executor.StartNew(() =>
+                {
+                    // todo
+                    //     boolean reconnect = code < 3500 || code >= 5000 || (code >= 4000 && code < 4500);
+                    //     int disconnectCode = code;
+                    //     String disconnectReason = reason;
+                    //     if (disconnectCode < 3000) {
+                    //         if (disconnectCode == MESSAGE_SIZE_LIMIT_EXCEEDED_STATUS) {
+                    //             disconnectCode = DISCONNECTED_MESSAGE_SIZE_LIMIT;
+                    //             disconnectReason = "message size limit";
+                    //         } else {
+                    //             disconnectCode = CONNECTING_TRANSPORT_CLOSED;
+                    //             disconnectReason = "transport closed";
+                    //         }
+                    //     }
+                    if (_state != ClientState.DISCONNECTED)
+                    {
+                        ProcessDisconnect(CONNECTING_TRANSPORT_CLOSED, "transport closed", false);
+                        // ProcessDisconnect(CONNECTING_TRANSPORT_CLOSED, "transport closed", reconnect);
+                    }
+
+                    if (_state == ClientState.CONNECTING)
+                    {
+                        ScheduleReconnect();
+                    }
+                });
+            });
+
+            try
+            {
+                await client.StartOrFail();
+            }
+            catch (Exception e)
+            {
+                HandleConnectionError(e);
+                ProcessDisconnect(CONNECTING_TRANSPORT_CLOSED, "transport closed", true);
+                if (_state == ClientState.CONNECTING)
+                {
+                    ScheduleReconnect();
+                }
+
+                return;
             }
 
-            _ws.Abort();
+            _ws = client;
+            _executor.StartNew(async () =>
+            {
+                try
+                {
+                    await HandleConnectionOpen();
+                }
+                catch (Exception ex)
+                {
+                    // Should never happen.
+                    Console.WriteLine(ex.StackTrace);
+                    _listener.OnError(this, new ErrorEvent(new UnclassifiedError(ex)));
+                    ProcessDisconnect(DISCONNECTED_BAD_PROTOCOL, "bad protocol (open)", false);
+                }
+            });
         }
 
         private async Task HandleConnectionOpen()
@@ -389,7 +374,7 @@ namespace Centrifuge
                         if (err != null)
                         {
                             _listener.OnError(this, new ErrorEvent(new TokenError(err)));
-                            _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", new CancellationToken());
+                            _ws.Stop(WebSocketCloseStatus.NormalClosure, "");
                             return;
                         }
 
@@ -476,7 +461,7 @@ namespace Centrifuge
                 ProcessDisconnect(CONNECTING_SUBSCRIBE_TIMEOUT, "subscribe timeout", true);
             }, TaskContinuationOptions.OnlyOnCanceled);
 
-            Task sendTask = _ws.SendAsync(new ArraySegment<byte>(SerializeCommand(cmd)), WebSocketMessageType.Binary, true, CancellationToken.None);
+            Task sendTask = _ws.SendInstant(SerializeCommand(cmd));
             sendTask.Wait();
         }
 
@@ -523,7 +508,7 @@ namespace Centrifuge
                 _futures.TryRemove(cmd.Id, out _);
             }).ContinueWith(t => { ProcessDisconnect(CONNECTING_UNSUBSCRIBE_ERROR, "unsubscribe error", true); }, TaskContinuationOptions.OnlyOnFaulted);
 
-            _ws.SendAsync(new ArraySegment<byte>(SerializeCommand(cmd)), WebSocketMessageType.Binary, true, CancellationToken.None);
+            _ws.SendInstant(SerializeCommand(cmd));
         }
 
         private byte[] SerializeCommand(Protocol.Command cmd)
@@ -658,11 +643,11 @@ namespace Centrifuge
                     if (reply.Error.Code == 109) // Token expired.
                     {
                         _refreshRequired = true;
-                        _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", new CancellationToken());
+                        _ws.Stop(WebSocketCloseStatus.NormalClosure, "");
                     }
                     else if (reply.Error.Temporary)
                     {
-                        _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", new CancellationToken());
+                        _ws.Stop(WebSocketCloseStatus.NormalClosure, "");
                     }
                     else
                     {
@@ -765,7 +750,7 @@ namespace Centrifuge
             foreach (KeyValuePair<uint, Protocol.Command> entry in _connectCommands)
             {
                 Protocol.Command cmd = entry.Value;
-                Task sendTask = _ws.SendAsync(new ArraySegment<byte>(SerializeCommand(cmd)), WebSocketMessageType.Text, true, new CancellationToken());
+                Task sendTask = _ws.SendInstant(SerializeCommand(cmd));
                 sendTask.Wait();
                 if (sendTask.IsFaulted)
                 {
@@ -785,7 +770,7 @@ namespace Centrifuge
                 Protocol.Command cmd = entry.Value;
                 TaskCompletionSource<Protocol.Reply> tcs;
                 _futures.TryGetValue(cmd.Id, out tcs);
-                Task sendTask = _ws.SendAsync(new ArraySegment<byte>(SerializeCommand(cmd)), WebSocketMessageType.Text, true, new CancellationToken());
+                Task sendTask = _ws.SendInstant(SerializeCommand(cmd));
                 sendTask.Wait();
 
                 if (sendTask.IsFaulted)
@@ -957,10 +942,10 @@ namespace Centrifuge
             {
                 HandleConnectionError(t.Exception);
                 _futures.TryRemove(cmd.Id, out _);
-                _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", new CancellationToken());
+                _ws.Stop(WebSocketCloseStatus.NormalClosure, "");
             }, TaskContinuationOptions.OnlyOnCanceled);
 
-            Task sendTask = _ws.SendAsync(new ArraySegment<byte>(SerializeCommand(cmd)), WebSocketMessageType.Binary, true, CancellationToken.None);
+            Task sendTask = _ws.SendInstant(SerializeCommand(cmd));
             sendTask.Wait();
         }
 
@@ -1191,7 +1176,7 @@ namespace Centrifuge
             {
                 // Empty command as a ping.
                 var cmd = new Protocol.Command();
-                Task sendTask = _ws.SendAsync(new ArraySegment<byte>(SerializeCommand(cmd)), WebSocketMessageType.Text, true, new CancellationToken());
+                Task sendTask = _ws.SendInstant(SerializeCommand(cmd));
                 sendTask.Wait();
             }
         }
@@ -1241,7 +1226,7 @@ namespace Centrifuge
             }
             else
             {
-                Task sendTask = _ws.SendAsync(new ArraySegment<byte>(SerializeCommand(cmd)), WebSocketMessageType.Text, true, new CancellationToken());
+                Task sendTask = _ws.SendInstant(SerializeCommand(cmd));
                 sendTask.Wait();
                 if (sendTask.IsFaulted)
                 {
@@ -1263,7 +1248,7 @@ namespace Centrifuge
             }
             else
             {
-                Task sendTask = _ws.SendAsync(new ArraySegment<byte>(SerializeCommand(cmd)), WebSocketMessageType.Text, true, new CancellationToken());
+                Task sendTask = _ws.SendInstant(SerializeCommand(cmd));
                 sendTask.Wait();
                 if (sendTask.IsFaulted)
                 {
