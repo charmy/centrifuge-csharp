@@ -3,5 +3,6 @@
 ### TODO
 
 - [ ] Code Refactor
+- [ ] Nuget
 - [ ] History
 - [ ] Presence
