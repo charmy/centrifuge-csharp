@@ -31,7 +31,7 @@ namespace Centrifuge
         private static readonly CancellationTokenSource executorCts = new CancellationTokenSource();
         private readonly TaskFactory _executor = new TaskFactory(executorCts.Token);
 
-        private int _pingInterval;
+        private TimeSpan _pingInterval;
         private bool _sendPong;
 
         private Task _pingTask;
@@ -667,7 +667,7 @@ namespace Centrifuge
 
             _state = ClientState.CONNECTED;
             _listener.OnConnected(this, e);
-            _pingInterval = (int)(result.Ping * 1000);
+            _pingInterval = TimeSpan.FromSeconds(result.Ping);
             _sendPong = result.Pong;
 
             lock (_subs)
@@ -792,11 +792,11 @@ namespace Centrifuge
             _connectAsyncCommands.Clear();
 
             _pingTaskCts = new CancellationTokenSource();
-            _pingTask = Task.Delay(_pingInterval + _opts.MaxServerPingDelay).ContinueWith((_) => { WaitServerPing(); }, _pingTaskCts.Token);
+            _pingTask = Task.Delay(_pingInterval.Add(TimeSpan.FromMilliseconds(_opts.MaxServerPingDelay))).ContinueWith((_) => { WaitServerPing(); }, _pingTaskCts.Token);
 
             if (result.Expires)
             {
-                int ttl = (int)result.Ttl * 1000;
+                var ttl = (int)Math.Min((double)result.Ttl * 1000, int.MaxValue);
                 _refreshTaskCts = new CancellationTokenSource();
                 _refreshTask = Task.Delay(ttl).ContinueWith((_) => { SendRefresh(); }, _refreshTaskCts.Token);
             }
@@ -868,7 +868,7 @@ namespace Centrifuge
 
                     if (result.Expires)
                     {
-                        int ttl = (int)result.Ttl * 1000;
+                        var ttl = (int)Math.Min((double)result.Ttl * 1000, int.MaxValue);
                         _refreshTaskCts = new CancellationTokenSource();
                         _refreshTask = Task.Delay(ttl).ContinueWith((_) => { SendRefresh(); }, _refreshTaskCts.Token);
                     }
@@ -936,7 +936,8 @@ namespace Centrifuge
                 catch (Exception e)
                 {
                     // Should never happen.
-                    Console.WriteLine(e);
+                    HandleConnectionError(e);
+                    _ws.Stop(WebSocketCloseStatus.NormalClosure, "");
                 }
             }, cts.Token).ContinueWith(t =>
             {
@@ -1171,7 +1172,7 @@ namespace Centrifuge
             }
 
             _pingTaskCts = new CancellationTokenSource();
-            _pingTask = Task.Delay(_pingInterval + _opts.MaxServerPingDelay).ContinueWith((_) => { WaitServerPing(); }, _pingTaskCts.Token);
+            _pingTask = Task.Delay(_pingInterval.Add(TimeSpan.FromMilliseconds(_opts.MaxServerPingDelay))).ContinueWith((_) => { WaitServerPing(); }, _pingTaskCts.Token);
             if (_sendPong)
             {
                 // Empty command as a ping.
