@@ -1,0 +1,1 @@
+protoc --proto_path=proto --csharp_out=src --csharp_opt=file_extension=.g.cs client.proto

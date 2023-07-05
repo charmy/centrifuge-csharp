@@ -1,23 +1,4 @@
-# Centrifuge C# Client
-
-This SDK provides a client to connect to Centrifugo
-
-# ⚠️ Working in progress
-SDK is not completed yet.
-
-
-### TODO
-
-- [ ] Code Refactor
-- [ ] Nuget
-- [ ] History
-- [ ] Presence
-
-
-### Example
-
-```cs
-using System;
+﻿using System;
 using System.Threading;
 using Centrifuge;
 
@@ -150,4 +131,3 @@ namespace Example
         }
     }
 }
-```
