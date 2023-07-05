@@ -1,5 +1,7 @@
 # Centrifuge C# Client
 
+![Nuget](https://img.shields.io/nuget/v/Centrifuge)
+
 This SDK provides a client to connect to Centrifugo
 
 # ⚠️ Working in progress
