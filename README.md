@@ -5,11 +5,19 @@ This SDK provides a client to connect to Centrifugo
 # ⚠️ Working in progress
 SDK is not completed yet.
 
+# Installation
+```
+dotnet add package Centrifuge --version 1.0.0
+```
+
+# Platforms
+* .NET Framework 4.8
+* Unity 2022.3+ (Api .NET Framework)
+
 
 ### TODO
 
 - [ ] Code Refactor
-- [ ] Nuget
 - [ ] History
 - [ ] Presence
 
