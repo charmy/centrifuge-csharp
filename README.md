@@ -5,8 +5,8 @@
 This SDK provides a client to connect to Centrifugo
 
 # ⚠️ Working in progress
-SDK is not completed yet.
-
+- SDK is not completed yet.
+- This library is translated from [centrifuge java sdk](https://github.com/centrifugal/centrifuge-java). It is not stable.
 # Installation
 ```
 dotnet add package Centrifuge --version 1.0.0
